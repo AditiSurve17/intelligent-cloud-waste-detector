@@ -1,259 +1,410 @@
+# File: src/lambda-functions/cwd-data-collector.py
+# Enhanced Lambda function with scheduling support and advanced waste detection
+# Updated: 2025-06-26 - Checkpoint 4
+
 import json
 import boto3
-import csv
 import gzip
-import io
+import csv
 from datetime import datetime, timedelta
-from typing import Dict, List, Any
+from decimal import Decimal
+import logging
+import uuid
+import os
 
-# Initialize AWS services for ap-south-1 region
+# Configure logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize AWS clients for ap-south-1
 s3_client = boto3.client('s3', region_name='ap-south-1')
 dynamodb = boto3.resource('dynamodb', region_name='ap-south-1')
 
+# Your DynamoDB tables
+usage_table = dynamodb.Table('cwd-processed-usage-data')
+recommendations_table = dynamodb.Table('cwd-waste-recommendations')
+
 def lambda_handler(event, context):
     """
-    Main Lambda function to collect and process Cost & Usage Report data
-    Optimized for ap-south-1 (Mumbai) region
+    Enhanced Lambda function supporting both S3 events and scheduled processing
     """
+    
     try:
-        print(f"Starting CUR data collection in ap-south-1 at {datetime.now()}")
+        processed_records = 0
+        recommendations_count = 0
         
-        # Configuration
-        cur_bucket = get_cur_bucket_name()
-        if not cur_bucket:
-            return create_error_response("CUR bucket not found")
+        # Determine event type
+        if 'source' in event and event['source'] == 'aws.events':
+            # Scheduled event from EventBridge
+            logger.info("Processing scheduled event - scanning S3 bucket for new files")
+            processed_records, recommendations_count = process_scheduled_event(event)
+            
+        elif 'Records' in event:
+            # S3 event (original functionality)
+            logger.info("Processing S3 event")
+            processed_records, recommendations_count = process_s3_event(event)
+            
+        elif event.get('test_direct'):
+            # Direct test (existing functionality)
+            logger.info("Processing direct test")
+            processed_records, recommendations_count = test_with_sample_data()
+            
+        else:
+            logger.warning("Unknown event type")
+            return {
+                'statusCode': 400,
+                'body': json.dumps({
+                    'error': 'Unknown event type',
+                    'timestamp': datetime.now().isoformat()
+                })
+            }
         
-        # Process CUR files
-        processed_files = process_cur_files(cur_bucket)
-        
-        # Store processed data
-        storage_result = store_processed_data(processed_files)
-        
-        response = {
+        return {
             'statusCode': 200,
             'body': json.dumps({
-                'message': 'CUR data collection completed successfully',
-                'region': 'ap-south-1',
-                'files_processed': len(processed_files),
+                'message': 'Successfully processed cost data',
+                'processed_records': processed_records,
+                'recommendations_count': recommendations_count,
                 'timestamp': datetime.now().isoformat(),
-                'storage_result': storage_result
+                'event_type': get_event_type(event)
             })
         }
         
-        print(f"Completed successfully in ap-south-1. Processed {len(processed_files)} files")
-        return response
-        
     except Exception as e:
-        print(f"Error in lambda_handler: {str(e)}")
-        return create_error_response(str(e))
+        logger.error(f"Error in lambda_handler: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            })
+        }
 
-def get_cur_bucket_name():
-    """
-    Find the S3 bucket containing Cost & Usage Reports in ap-south-1
-    """
-    try:
-        # List all buckets and find the one with 'cur' or 'cost-usage-reports' in name
-        response = s3_client.list_buckets()
-        
-        for bucket in response['Buckets']:
-            bucket_name = bucket['Name']
-            if 'cost-usage-reports' in bucket_name or 'cur' in bucket_name:
-                # Verify bucket is in ap-south-1
-                try:
-                    location = s3_client.get_bucket_location(Bucket=bucket_name)
-                    bucket_region = location.get('LocationConstraint', 'us-east-1')
-                    if bucket_region == 'ap-south-1':
-                        print(f"Found CUR bucket in ap-south-1: {bucket_name}")
-                        return bucket_name
-                except Exception as e:
-                    print(f"Could not get location for bucket {bucket_name}: {str(e)}")
-                    continue
-        
-        print("No CUR bucket found in ap-south-1")
-        return None
-        
-    except Exception as e:
-        print(f"Error finding CUR bucket: {str(e)}")
-        return None
+def get_event_type(event):
+    """Determine event type for logging"""
+    if 'source' in event and event['source'] == 'aws.events':
+        return 'scheduled'
+    elif 'Records' in event:
+        return 's3_trigger'
+    elif event.get('test_direct'):
+        return 'direct_test'
+    else:
+        return 'unknown'
 
-def process_cur_files(bucket_name: str) -> List[Dict]:
-    """
-    Process CUR files from S3 bucket
-    """
-    processed_files = []
-    
+def process_scheduled_event(event):
+    """Process scheduled events - scan S3 bucket for unprocessed files"""
     try:
-        # List objects in the CUR bucket
-        response = s3_client.list_objects_v2(
-            Bucket=bucket_name,
-            Prefix='cost-usage-reports/'
-        )
+        bucket_name = event.get('detail', {}).get('bucket', 'cwd-cost-usage-reports-as-2025')
+        
+        # List all CSV files in bucket
+        response = s3_client.list_objects_v2(Bucket=bucket_name)
         
         if 'Contents' not in response:
-            print("No CUR files found yet - this is normal for the first 24 hours")
-            return processed_files
+            logger.info("No files found in bucket")
+            return 0, 0
         
-        # Process each CSV file
+        processed_records = 0
+        recommendations_count = 0
+        
+        # Process recent CSV files (last 24 hours or all if forced)
+        cutoff_time = datetime.now() - timedelta(hours=24)
+        
         for obj in response['Contents']:
             key = obj['Key']
+            last_modified = obj['LastModified'].replace(tzinfo=None)
             
-            # Only process CSV files
-            if key.endswith('.csv.gz') or key.endswith('.csv'):
-                print(f"Processing file: {key}")
-                file_data = process_single_cur_file(bucket_name, key)
-                if file_data:
-                    processed_files.append(file_data)
+            # Skip non-CSV files and old files
+            if not key.endswith('.csv') or 'Manifest' in key:
+                continue
                 
-                # Limit processing for free tier (process max 5 files per run)
-                if len(processed_files) >= 5:
-                    print("Reached processing limit for free tier")
-                    break
+            # Process recent files or if forced
+            if last_modified > cutoff_time or event.get('detail', {}).get('processAllFiles', False):
+                logger.info(f"Processing scheduled file: {key}")
+                
+                # Process this file
+                usage_data = process_cur_file(bucket_name, key)
+                processed_records += len(usage_data)
+                
+                if usage_data:
+                    # Store usage data
+                    store_usage_data(usage_data)
+                    
+                    # Generate recommendations
+                    recommendations = analyze_waste_patterns(usage_data)
+                    recommendations_count += len(recommendations)
+                    
+                    # Store recommendations
+                    store_recommendations(recommendations)
         
-        return processed_files
+        logger.info(f"Scheduled processing completed: {processed_records} records, {recommendations_count} recommendations")
+        return processed_records, recommendations_count
         
     except Exception as e:
-        print(f"Error processing CUR files: {str(e)}")
-        return processed_files
+        logger.error(f"Error in scheduled processing: {str(e)}")
+        return 0, 0
 
-def process_single_cur_file(bucket_name: str, key: str) -> Dict:
-    """
-    Process a single CUR file and extract key metrics
-    """
+def process_s3_event(event):
+    """Process S3 events (original functionality)"""
+    processed_records = 0
+    recommendations_count = 0
+    
+    for record in event['Records']:
+        bucket = record['s3']['bucket']['name']
+        key = record['s3']['object']['key']
+        
+        logger.info(f"Processing S3 event file: {key}")
+        
+        # Skip manifest files
+        if 'Manifest' in key or key.endswith('.json'):
+            logger.info("Skipping manifest file")
+            continue
+        
+        # Process CUR data
+        usage_data = process_cur_file(bucket, key)
+        processed_records += len(usage_data)
+        
+        if usage_data:
+            # Store usage data
+            store_usage_data(usage_data)
+            
+            # Generate recommendations
+            recommendations = analyze_waste_patterns(usage_data)
+            recommendations_count += len(recommendations)
+            
+            # Store recommendations
+            store_recommendations(recommendations)
+    
+    return processed_records, recommendations_count
+
+def process_cur_file(bucket, key):
+    """Process Cost and Usage Report file from S3"""
     try:
+        logger.info(f"Processing file: {key} from bucket: {bucket}")
+        
         # Download file from S3
-        response = s3_client.get_object(Bucket=bucket_name, Key=key)
-        file_content = response['Body'].read()
+        response = s3_client.get_object(Bucket=bucket, Key=key)
         
         # Handle gzipped files
         if key.endswith('.gz'):
-            file_content = gzip.decompress(file_content)
+            content = gzip.decompress(response['Body'].read()).decode('utf-8')
+        else:
+            content = response['Body'].read().decode('utf-8')
         
-        # Parse CSV content
-        csv_content = file_content.decode('utf-8')
-        csv_reader = csv.DictReader(io.StringIO(csv_content))
+        # Parse CSV data with enhanced error handling
+        lines = content.splitlines()
+        logger.info(f"File has {len(lines)} lines")
         
-        # Extract key metrics
+        if len(lines) < 2:
+            logger.warning(f"File {key} has insufficient data")
+            return []
+        
+        csv_reader = csv.DictReader(lines)
         usage_data = []
-        total_cost = 0
-        service_costs = {}
-        resource_usage = {}
-        ap_south_1_costs = 0  # Track costs specific to ap-south-1
         
-        for row in csv_reader:
-            # Basic validation
-            if not row.get('lineItem/UsageStartDate'):
-                continue
-            
-            # Extract key information
-            service = row.get('product/ProductName', 'Unknown')
-            cost = float(row.get('lineItem/BlendedCost', 0))
-            usage_amount = float(row.get('lineItem/UsageAmount', 0))
-            resource_id = row.get('lineItem/ResourceId', '')
-            usage_type = row.get('lineItem/UsageType', '')
-            availability_zone = row.get('lineItem/AvailabilityZone', '')
-            
-            # Track ap-south-1 specific costs
-            if 'ap-south-1' in availability_zone or 'aps1' in usage_type:
-                ap_south_1_costs += cost
-            
-            # Aggregate data
-            total_cost += cost
-            service_costs[service] = service_costs.get(service, 0) + cost
-            
-            if resource_id:
-                resource_usage[resource_id] = {
-                    'service': service,
-                    'usage_type': usage_type,
-                    'usage_amount': usage_amount,
-                    'cost': cost,
-                    'availability_zone': availability_zone,
-                    'last_updated': row.get('lineItem/UsageStartDate')
+        for row_num, row in enumerate(csv_reader, 1):
+            try:
+                # Support both AWS CUR format and simplified format
+                resource_data = {
+                    'resource_id': (row.get('lineItem/ResourceId') or row.get('ResourceId') or f'unknown-{uuid.uuid4().hex[:8]}'),
+                    'service_type': (row.get('product/ProductName') or row.get('ProductName') or 'Unknown Service'),
+                    'usage_type': (row.get('lineItem/UsageType') or row.get('UsageType') or 'Unknown Usage'),
+                    'usage_amount': float(row.get('lineItem/UsageAmount') or row.get('UsageAmount') or 0),
+                    'unblended_cost': float(row.get('lineItem/UnblendedCost') or row.get('UnblendedCost') or 0),
+                    'usage_start_date': (row.get('lineItem/UsageStartDate') or row.get('UsageStartDate') or ''),
+                    'usage_end_date': (row.get('lineItem/UsageEndDate') or row.get('UsageEndDate') or ''),
+                    'availability_zone': (row.get('lineItem/AvailabilityZone') or row.get('AvailabilityZone') or 'ap-south-1a'),
+                    'instance_type': (row.get('product/instanceType') or row.get('instanceType') or 'unknown'),
+                    'operation': (row.get('lineItem/Operation') or row.get('Operation') or 'unknown'),
+                    'region': (row.get('product/region') or row.get('region') or 'ap-south-1'),
+                    'timestamp': datetime.now().isoformat(),
+                    'processed_date': datetime.now().strftime('%Y-%m-%d'),
+                    'file_source': key
                 }
-            
-            # Store individual usage record (limit for free tier)
-            if len(usage_data) < 1000:  # Limit to prevent memory issues
-                usage_data.append({
-                    'timestamp': row.get('lineItem/UsageStartDate'),
-                    'service': service,
-                    'usage_type': usage_type,
-                    'usage_amount': usage_amount,
-                    'cost': cost,
-                    'resource_id': resource_id,
-                    'availability_zone': availability_zone
-                })
+                
+                # Only include records with actual usage or cost
+                if resource_data['usage_amount'] > 0 or resource_data['unblended_cost'] > 0:
+                    usage_data.append(resource_data)
+                    
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Skipping row {row_num} in {key}: {e}")
+                continue
         
-        return {
-            'file_key': key,
-            'total_cost': total_cost,
-            'ap_south_1_costs': ap_south_1_costs,
-            'service_costs': service_costs,
-            'resource_usage': resource_usage,
-            'usage_data': usage_data,
-            'processed_at': datetime.now().isoformat(),
-            'region': 'ap-south-1'
-        }
+        logger.info(f"Successfully processed {len(usage_data)} valid usage records from {key}")
+        return usage_data
         
     except Exception as e:
-        print(f"Error processing file {key}: {str(e)}")
-        return None
+        logger.error(f"Error processing file {key}: {str(e)}")
+        return []
 
-def store_processed_data(processed_files: List[Dict]) -> Dict:
-    """
-    Store processed data (for now, just return summary)
-    In next checkpoint, we'll store this in DynamoDB
-    """
+def store_usage_data(usage_data):
+    """Store processed usage data with improved batch processing"""
     try:
-        total_files = len(processed_files)
-        total_cost = sum(file_data['total_cost'] for file_data in processed_files)
-        total_ap_south_costs = sum(file_data.get('ap_south_1_costs', 0) for file_data in processed_files)
-        total_records = sum(len(file_data['usage_data']) for file_data in processed_files)
+        with usage_table.batch_writer() as batch:
+            for record in usage_data:
+                # Convert floats to Decimal for DynamoDB
+                item = {
+                    'resource_id': record['resource_id'],
+                    'timestamp': record['timestamp'],
+                    'service_type': record['service_type'],
+                    'usage_type': record['usage_type'],
+                    'usage_amount': Decimal(str(record['usage_amount'])),
+                    'unblended_cost': Decimal(str(record['unblended_cost'])),
+                    'usage_start_date': record['usage_start_date'],
+                    'usage_end_date': record['usage_end_date'],
+                    'availability_zone': record['availability_zone'],
+                    'instance_type': record['instance_type'],
+                    'operation': record['operation'],
+                    'region': record['region'],
+                    'processed_date': record['processed_date'],
+                    'file_source': record['file_source']
+                }
+                batch.put_item(Item=item)
         
-        # Aggregate service costs across all files
-        all_service_costs = {}
-        for file_data in processed_files:
-            for service, cost in file_data['service_costs'].items():
-                all_service_costs[service] = all_service_costs.get(service, 0) + cost
-        
-        summary = {
-            'total_files_processed': total_files,
-            'total_cost': round(total_cost, 4),
-            'ap_south_1_costs': round(total_ap_south_costs, 4),
-            'total_records': total_records,
-            'top_services': sorted(all_service_costs.items(), 
-                                 key=lambda x: x[1], reverse=True)[:5],
-            'processing_timestamp': datetime.now().isoformat(),
-            'region': 'ap-south-1'
-        }
-        
-        print(f"Data summary for ap-south-1: {json.dumps(summary, indent=2)}")
-        return summary
+        logger.info(f"Successfully stored {len(usage_data)} usage records in DynamoDB")
         
     except Exception as e:
-        print(f"Error storing processed data: {str(e)}")
-        return {'error': str(e)}
+        logger.error(f"Error storing usage data: {str(e)}")
 
-def create_error_response(error_message: str) -> Dict:
-    """
-    Create standardized error response
-    """
-    return {
-        'statusCode': 500,
-        'body': json.dumps({
-            'error': error_message,
+def analyze_waste_patterns(usage_data):
+    """Enhanced waste detection with sophisticated algorithms"""
+    recommendations = []
+    
+    # Group usage data by resource for analysis
+    resource_usage = {}
+    
+    for record in usage_data:
+        resource_id = record['resource_id']
+        if resource_id not in resource_usage:
+            resource_usage[resource_id] = {
+                'service_type': record['service_type'],
+                'total_cost': 0,
+                'usage_records': [],
+                'instance_type': record['instance_type'],
+                'availability_zone': record['availability_zone'],
+                'total_usage': 0
+            }
+        
+        resource_usage[resource_id]['total_cost'] += record['unblended_cost']
+        resource_usage[resource_id]['total_usage'] += record['usage_amount']
+        resource_usage[resource_id]['usage_records'].append(record)
+    
+    # Enhanced waste detection algorithms
+    for resource_id, usage in resource_usage.items():
+        
+        # Skip very low-cost resources
+        if usage['total_cost'] < 0.01:
+            continue
+            
+        wastage_score = 0
+        recommendation_details = []
+        priority = 'Low'
+        
+        # Algorithm 1: EC2 Low Utilization Detection
+        if 'EC2' in usage['service_type'] or 'Compute' in usage['service_type']:
+            avg_usage = usage['total_usage'] / len(usage['usage_records']) if usage['usage_records'] else 0
+            
+            if avg_usage < 5:  # Very low utilization
+                wastage_score += 40
+                recommendation_details.append("Critical: Very low EC2 utilization detected")
+                priority = 'High'
+            elif avg_usage < 20:  # Low utilization
+                wastage_score += 25
+                recommendation_details.append("Low EC2 utilization - consider downsizing")
+                priority = 'Medium'
+        
+        # Algorithm 2: Storage Optimization
+        if 'Storage' in usage['service_type'] or 'EBS' in usage['service_type']:
+            if usage['total_cost'] > 1.0:
+                wastage_score += 30
+                recommendation_details.append("High storage costs - review utilization")
+                priority = 'High' if priority == 'Low' else priority
+        
+        # Algorithm 3: Regional Optimization
+        if usage['availability_zone'] != 'ap-south-1a':
+            wastage_score += 10
+            recommendation_details.append("Resource in non-primary AZ")
+        
+        # Create recommendation if wastage detected
+        if wastage_score > 0:
+            savings_percentage = min(wastage_score / 100, 0.8)
+            estimated_savings = round(usage['total_cost'] * savings_percentage, 2)
+            
+            recommendation = {
+                'recommendation_id': f"rec-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}",
+                'resource_id': resource_id,
+                'service_type': usage['service_type'],
+                'wastage_score': wastage_score,
+                'estimated_savings': estimated_savings,
+                'estimated_monthly_savings': estimated_savings * 30,
+                'recommendations': recommendation_details,
+                'current_cost': usage['total_cost'],
+                'instance_type': usage['instance_type'],
+                'availability_zone': usage['availability_zone'],
+                'priority': priority,
+                'created_at': datetime.now().isoformat(),
+                'status': 'Active',
+                'confidence_score': min(wastage_score / 10, 10),
+                'total_usage': usage['total_usage']
+            }
+            recommendations.append(recommendation)
+    
+    logger.info(f"Generated {len(recommendations)} waste recommendations")
+    return recommendations
+
+def store_recommendations(recommendations):
+    """Store recommendations with enhanced metadata"""
+    try:
+        with recommendations_table.batch_writer() as batch:
+            for rec in recommendations:
+                # Convert floats to Decimal for DynamoDB
+                item = {
+                    'recommendation_id': rec['recommendation_id'],
+                    'created_at': rec['created_at'],
+                    'resource_id': rec['resource_id'],
+                    'service_type': rec['service_type'],
+                    'wastage_score': Decimal(str(rec['wastage_score'])),
+                    'estimated_savings': Decimal(str(rec['estimated_savings'])),
+                    'estimated_monthly_savings': Decimal(str(rec['estimated_monthly_savings'])),
+                    'recommendations': rec['recommendations'],
+                    'current_cost': Decimal(str(rec['current_cost'])),
+                    'instance_type': rec['instance_type'],
+                    'availability_zone': rec['availability_zone'],
+                    'priority': rec['priority'],
+                    'status': rec['status'],
+                    'confidence_score': Decimal(str(rec['confidence_score'])),
+                    'total_usage': Decimal(str(rec['total_usage']))
+                }
+                batch.put_item(Item=item)
+        
+        logger.info(f"Successfully stored {len(recommendations)} recommendations in DynamoDB")
+        
+    except Exception as e:
+        logger.error(f"Error storing recommendations: {str(e)}")
+
+def test_with_sample_data():
+    """Enhanced test function with comprehensive sample data"""
+    sample_data = [
+        {
+            'resource_id': 'i-0123456789abcdef0',
+            'service_type': 'Amazon Elastic Compute Cloud',
+            'usage_type': 'BoxUsage:t3.micro',
+            'usage_amount': 24.0,
+            'unblended_cost': 0.50,
+            'usage_start_date': '2025-06-22T00:00:00Z',
+            'usage_end_date': '2025-06-22T24:00:00Z',
+            'availability_zone': 'ap-south-1a',
+            'instance_type': 't3.micro',
+            'operation': 'RunInstances',
             'region': 'ap-south-1',
-            'timestamp': datetime.now().isoformat()
-        })
-    }
-
-# Regional optimization function
-def optimize_for_mumbai_region():
-    """
-    Apply optimizations specific to ap-south-1 region
-    """
-    optimizations = {
-        'region': 'ap-south-1',
-        'timezone': 'Asia/Kolkata',
-        'data_residency': 'India',
-        'latency_optimized': True
-    }
-    return optimizations
+            'timestamp': datetime.now().isoformat(),
+            'processed_date': datetime.now().strftime('%Y-%m-%d'),
+            'file_source': 'test-data'
+        }
+    ]
+    
+    logger.info("Testing with enhanced sample data...")
+    store_usage_data(sample_data)
+    recommendations = analyze_waste_patterns(sample_data)
+    store_recommendations(recommendations)
+    
+    return len(sample_data), len(recommendations)

@@ -1,0 +1,8 @@
+lineItem/ResourceId,product/ProductName,lineItem/UsageType,lineItem/UsageAmount,lineItem/UnblendedCost,lineItem/UsageStartDate,lineItem/UsageEndDate,lineItem/AvailabilityZone,product/instanceType,lineItem/Operation,product/region
+i-0123456789abcdef0,Amazon Elastic Compute Cloud,BoxUsage:t3.micro,24.0,0.50,2025-06-22T00:00:00Z,2025-06-22T24:00:00Z,ap-south-1a,t3.micro,RunInstances,ap-south-1
+vol-0987654321fedcba0,Amazon Elastic Block Store,EBS:VolumeUsage.gp3,30.0,1.20,2025-06-22T00:00:00Z,2025-06-22T24:00:00Z,ap-south-1a,,CreateVolume,ap-south-1
+i-0abcdef123456789a,Amazon Elastic Compute Cloud,BoxUsage:t3.small,2.5,0.80,2025-06-22T00:00:00Z,2025-06-22T24:00:00Z,ap-south-1b,t3.small,RunInstances,ap-south-1
+unknown-resource-001,Amazon Simple Storage Service,StorageUsage:StandardStorage,5.2,0.12,2025-06-22T00:00:00Z,2025-06-22T24:00:00Z,ap-south-1,,StorageUsage,ap-south-1
+i-0999888777666555c,Amazon Elastic Compute Cloud,BoxUsage:m5.large,720.0,15.50,2025-06-22T00:00:00Z,2025-06-22T24:00:00Z,ap-south-1a,m5.large,RunInstances,ap-south-1
+vol-0111222333444555d,Amazon Elastic Block Store,EBS:VolumeUsage.gp3,100.0,3.20,2025-06-22T00:00:00Z,2025-06-22T24:00:00Z,ap-south-1b,,CreateVolume,ap-south-1
+i-0aaabbbcccdddeeef,Amazon Elastic Compute Cloud,BoxUsage:t3.nano,720.0,2.10,2025-06-22T00:00:00Z,2025-06-22T24:00:00Z,ap-south-1a,t3.nano,RunInstances,ap-south-1

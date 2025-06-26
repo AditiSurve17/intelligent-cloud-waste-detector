@@ -1,0 +1,99 @@
+# File: config/project-settings.yaml
+# Project Configuration for Cloud Waste Detector
+# Updated: 2025-06-26 - Checkpoint 4
+
+project:
+  name: Intelligent Cloud Waste Detector
+  version: "1.0.0"
+  description: "AI-powered AWS resource waste detection and optimization"
+  
+development:
+  timeline:
+    total_weeks: 3
+    current_week: 1
+    current_checkpoint: 4
+  
+  checkpoints:
+    week1:
+      - name: "AWS Setup & IAM Configuration"
+        status: completed
+        date: "2025-06-24"
+      
+      - name: "Cost & Usage Reports Setup"
+        status: completed
+        date: "2025-06-25"
+      
+      - name: "Data Processing Pipeline"
+        status: completed
+        date: "2025-06-26"
+      
+      - name: "Automated Scheduling & Advanced Analytics"
+        status: completed
+        date: "2025-06-26"
+    
+    week2:
+      - name: "SageMaker Setup & Data Preparation"
+        status: pending
+      
+      - name: "Model Development (Prophet/ARIMA)"
+        status: pending
+      
+      - name: "Prediction Pipeline"
+        status: pending
+    
+    week3:
+      - name: "Recommendation Engine"
+        status: pending
+      
+      - name: "Dashboard Development"
+        status: pending
+      
+      - name: "Testing & Deployment"
+        status: pending
+
+features:
+  completed:
+    - AWS infrastructure setup
+    - Cost data collection and processing
+    - DynamoDB storage for usage and recommendations
+    - Intelligent waste detection algorithms
+    - Automated scheduling with EventBridge
+    - Advanced analytics and ML feature preparation
+    - Anomaly detection
+    - Weekly reporting
+  
+  upcoming:
+    - Machine learning models (Prophet, ARIMA)
+    - Predictive cost forecasting
+    - Terraform script generation
+    - React dashboard
+    - Real-time monitoring
+    - Gamification features
+
+algorithms:
+  waste_detection:
+    - EC2 low utilization detection
+    - Storage over-provisioning analysis
+    - Idle resource identification
+    - Regional cost optimization
+    - Instance type optimization
+    - Cost trend analysis
+  
+  ml_features:
+    - Resource cost patterns
+    - Usage frequency analysis
+    - Service utilization metrics
+    - Time-based features
+    - Categorical encoding for ML
+    - Anomaly scoring
+
+cost_optimization:
+  current_status: "$0.05 total spend"
+  free_tier_compliance: "99.9%"
+  projected_monthly: "<$1.00"
+  
+performance_metrics:
+  data_processing: "~100 records/execution"
+  recommendation_generation: "~5 recommendations/run"
+  scheduling_frequency: "Every 6 hours"
+  analytics_frequency: "Weekly"

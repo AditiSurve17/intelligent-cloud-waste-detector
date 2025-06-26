@@ -1,0 +1,39 @@
+# File: tests/test-events.json
+# Test events for Lambda functions
+# Use these for testing the Lambda functions manually
+
+{
+  "s3_event": {
+    "Records": [
+      {
+        "s3": {
+          "bucket": {
+            "name": "cwd-cost-usage-reports-as-2025"
+          },
+          "object": {
+            "key": "sample-cur-data.csv"
+          }
+        }
+      }
+    ]
+  },
+  
+  "scheduled_event": {
+    "source": "aws.events",
+    "detail-type": "Scheduled Event",
+    "detail": {
+      "scheduled": true,
+      "bucket": "cwd-cost-usage-reports-as-2025",
+      "processAllFiles": true
+    }
+  },
+  
+  "direct_test_event": {
+    "test_direct": true
+  },
+  
+  "analytics_event": {
+    "analytics_type": "weekly_summary",
+    "force_refresh": true
+  }
+}
