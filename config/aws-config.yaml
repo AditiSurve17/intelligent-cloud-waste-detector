@@ -1,0 +1,102 @@
+# File: config/aws-config.yaml
+# AWS Configuration for Cloud Waste Detector
+# Region: ap-south-1 (Mumbai)
+# Updated: 2025-06-26 - Checkpoint 4
+
+aws:
+  region: ap-south-1
+  account_id: "266735843482"
+  
+services:
+  s3:
+    bucket_name: cwd-cost-usage-reports-as-2025
+    regions:
+      - ap-south-1
+    
+  dynamodb:
+    tables:
+      usage_data:
+        name: cwd-processed-usage-data
+        partition_key: resource_id
+        sort_key: timestamp
+        billing_mode: ON_DEMAND
+      
+      recommendations:
+        name: cwd-waste-recommendations
+        partition_key: recommendation_id
+        sort_key: created_at
+        billing_mode: ON_DEMAND
+  
+  lambda:
+    functions:
+      data_collector:
+        name: cwd-data-collector
+        runtime: python3.12
+        timeout: 300
+        memory: 256
+        role: CloudWasteDetector-LambdaRole
+      
+      advanced_analytics:
+        name: cwd-advanced-analytics
+        runtime: python3.12
+        timeout: 300
+        memory: 256
+        role: CloudWasteDetector-LambdaRole
+  
+  eventbridge:
+    rules:
+      auto_process:
+        name: CWD-AutoProcess-Schedule
+        schedule: rate(6 hours)
+        target: cwd-data-collector
+      
+      weekly_analytics:
+        name: CWD-Weekly-Analytics
+        schedule: rate(7 days)
+        target: cwd-advanced-analytics
+  
+  iam:
+    roles:
+      lambda_role:
+        name: CloudWasteDetector-LambdaRole
+        policies:
+          - AWSLambdaBasicExecutionRole
+          - AmazonS3ReadOnlyAccess
+          - AmazonDynamoDBFullAccess
+    
+    users:
+      developer:
+        name: cloud-developer
+        policies:
+          - PowerUserAccess
+          - IAMReadOnlyAccess
+          - CloudWasteDetector-PassRole
+
+free_tier_limits:
+  lambda:
+    requests_per_month: 1000000
+    compute_seconds: 400000
+  
+  s3:
+    storage_gb: 5
+    get_requests: 20000
+    put_requests: 2000
+  
+  dynamodb:
+    storage_gb: 25
+    read_capacity_units: 25
+    write_capacity_units: 25
+  
+  eventbridge:
+    events_per_month: 14000000
+
+monitoring:
+  budget:
+    name: CloudWasteDetector-Budget
+    amount: 5
+    currency: USD
+    alerts:
+      - threshold: 80
+        type: ACTUAL
+      - threshold: 100
+        type: FORECASTED
