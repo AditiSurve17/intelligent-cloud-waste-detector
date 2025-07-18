@@ -1,0 +1,9 @@
+# File: prediction-api/render.yaml
+services:
+  - type: web
+    name: cloud-prediction-api
+    env: python
+    buildCommand: ""
+    startCommand: gunicorn app:app
+    plan: free
+    region: singapore
