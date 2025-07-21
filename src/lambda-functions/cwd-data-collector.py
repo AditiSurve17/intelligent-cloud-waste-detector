@@ -1,7 +1,3 @@
-# File: src/lambda-functions/cwd-data-collector.py
-# Enhanced Lambda function with scheduling support and advanced waste detection
-# Updated: 2025-06-26 - Checkpoint 4
-
 import json
 import boto3
 import gzip
@@ -19,6 +15,7 @@ logger.setLevel(logging.INFO)
 # Initialize AWS clients for ap-south-1
 s3_client = boto3.client('s3', region_name='ap-south-1')
 dynamodb = boto3.resource('dynamodb', region_name='ap-south-1')
+cloudwatch = boto3.client('cloudwatch', region_name='ap-south-1')
 
 # Your DynamoDB tables
 usage_table = dynamodb.Table('cwd-processed-usage-data')
@@ -92,7 +89,9 @@ def get_event_type(event):
         return 'unknown'
 
 def process_scheduled_event(event):
-    """Process scheduled events - scan S3 bucket for unprocessed files"""
+    """
+    Process scheduled events - scan S3 bucket for unprocessed files
+    """
     try:
         bucket_name = event.get('detail', {}).get('bucket', 'cwd-cost-usage-reports-as-2025')
         
@@ -144,7 +143,9 @@ def process_scheduled_event(event):
         return 0, 0
 
 def process_s3_event(event):
-    """Process S3 events (original functionality)"""
+    """
+    Process S3 events (original functionality)
+    """
     processed_records = 0
     recommendations_count = 0
     
@@ -177,7 +178,10 @@ def process_s3_event(event):
     return processed_records, recommendations_count
 
 def process_cur_file(bucket, key):
-    """Process Cost and Usage Report file from S3"""
+    """
+    Process Cost and Usage Report file from S3
+    Enhanced with better error handling and performance
+    """
     try:
         logger.info(f"Processing file: {key} from bucket: {bucket}")
         
@@ -190,7 +194,7 @@ def process_cur_file(bucket, key):
         else:
             content = response['Body'].read().decode('utf-8')
         
-        # Parse CSV data with enhanced error handling
+        # Debug: Log file info
         lines = content.splitlines()
         logger.info(f"File has {len(lines)} lines")
         
@@ -198,9 +202,10 @@ def process_cur_file(bucket, key):
             logger.warning(f"File {key} has insufficient data")
             return []
         
+        # Parse CSV data
         csv_reader = csv.DictReader(lines)
-        usage_data = []
         
+        usage_data = []
         for row_num, row in enumerate(csv_reader, 1):
             try:
                 # Support both AWS CUR format and simplified format
@@ -237,7 +242,9 @@ def process_cur_file(bucket, key):
         return []
 
 def store_usage_data(usage_data):
-    """Store processed usage data with improved batch processing"""
+    """
+    Store processed usage data with improved batch processing
+    """
     try:
         with usage_table.batch_writer() as batch:
             for record in usage_data:
@@ -266,17 +273,23 @@ def store_usage_data(usage_data):
         logger.error(f"Error storing usage data: {str(e)}")
 
 def analyze_waste_patterns(usage_data):
-    """Enhanced waste detection with sophisticated algorithms"""
+    """
+    Enhanced waste detection with more sophisticated algorithms
+    """
     recommendations = []
     
     # Group usage data by resource for analysis
     resource_usage = {}
+    service_costs = {}
     
     for record in usage_data:
         resource_id = record['resource_id']
+        service_type = record['service_type']
+        
+        # Track by resource
         if resource_id not in resource_usage:
             resource_usage[resource_id] = {
-                'service_type': record['service_type'],
+                'service_type': service_type,
                 'total_cost': 0,
                 'usage_records': [],
                 'instance_type': record['instance_type'],
@@ -287,6 +300,11 @@ def analyze_waste_patterns(usage_data):
         resource_usage[resource_id]['total_cost'] += record['unblended_cost']
         resource_usage[resource_id]['total_usage'] += record['usage_amount']
         resource_usage[resource_id]['usage_records'].append(record)
+        
+        # Track by service type
+        if service_type not in service_costs:
+            service_costs[service_type] = 0
+        service_costs[service_type] += record['unblended_cost']
     
     # Enhanced waste detection algorithms
     for resource_id, usage in resource_usage.items():
@@ -305,37 +323,59 @@ def analyze_waste_patterns(usage_data):
             
             if avg_usage < 5:  # Very low utilization
                 wastage_score += 40
-                recommendation_details.append("Critical: Very low EC2 utilization detected")
+                recommendation_details.append("Critical: Very low EC2 utilization detected - consider downsizing or terminating")
                 priority = 'High'
             elif avg_usage < 20:  # Low utilization
                 wastage_score += 25
-                recommendation_details.append("Low EC2 utilization - consider downsizing")
+                recommendation_details.append("Low EC2 utilization - consider downsizing instance type")
                 priority = 'Medium'
         
         # Algorithm 2: Storage Optimization
         if 'Storage' in usage['service_type'] or 'EBS' in usage['service_type']:
             if usage['total_cost'] > 1.0:
                 wastage_score += 30
-                recommendation_details.append("High storage costs - review utilization")
+                recommendation_details.append("High storage costs detected - review storage utilization and consider lifecycle policies")
                 priority = 'High' if priority == 'Low' else priority
+            elif usage['total_cost'] > 0.5:
+                wastage_score += 15
+                recommendation_details.append("Moderate storage costs - consider optimizing storage class")
         
-        # Algorithm 3: Regional Optimization
+        # Algorithm 3: Idle Resource Detection
+        if len(usage['usage_records']) == 1 and usage['total_cost'] > 0.5:
+            wastage_score += 35
+            recommendation_details.append("Potentially idle resource with significant cost - investigate usage patterns")
+            priority = 'High'
+        
+        # Algorithm 4: Regional Cost Optimization
         if usage['availability_zone'] != 'ap-south-1a':
             wastage_score += 10
-            recommendation_details.append("Resource in non-primary AZ")
+            recommendation_details.append("Resource in non-primary AZ - consider consolidation to reduce data transfer costs")
+        
+        # Algorithm 5: Instance Type Optimization
+        if usage['instance_type'] in ['m5.large', 'm5.xlarge', 'c5.large', 'c5.xlarge']:
+            if avg_usage < 50:
+                wastage_score += 20
+                recommendation_details.append("Large instance with low utilization - consider smaller instance type")
+        
+        # Algorithm 6: Cost Trend Analysis
+        daily_cost = usage['total_cost']  # Assuming daily data
+        if daily_cost > 2.0:  # High daily cost
+            wastage_score += 25
+            recommendation_details.append("High daily cost resource - requires immediate attention")
+            priority = 'High'
         
         # Create recommendation if wastage detected
         if wastage_score > 0:
-            savings_percentage = min(wastage_score / 100, 0.8)
+            logger.info(f"WASTE ALERT 🚨 Resource {resource_id} with cost ${usage['total_cost']:.2f} scored {wastage_score} – Priority: {priority}")
+            savings_percentage = min(wastage_score / 100, 0.8)  # Max 80% savings
             estimated_savings = round(usage['total_cost'] * savings_percentage, 2)
-            
             recommendation = {
                 'recommendation_id': f"rec-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}",
                 'resource_id': resource_id,
                 'service_type': usage['service_type'],
                 'wastage_score': wastage_score,
                 'estimated_savings': estimated_savings,
-                'estimated_monthly_savings': estimated_savings * 30,
+                'estimated_monthly_savings': estimated_savings * 30,  # Monthly projection
                 'recommendations': recommendation_details,
                 'current_cost': usage['total_cost'],
                 'instance_type': usage['instance_type'],
@@ -343,16 +383,44 @@ def analyze_waste_patterns(usage_data):
                 'priority': priority,
                 'created_at': datetime.now().isoformat(),
                 'status': 'Active',
-                'confidence_score': min(wastage_score / 10, 10),
+                'confidence_score': min(wastage_score / 10, 10),  # 1-10 scale
                 'total_usage': usage['total_usage']
             }
             recommendations.append(recommendation)
+            
+            # Push custom metric to CloudWatch for alerts
+            try:
+                cloudwatch.put_metric_data(
+                    Namespace='CloudWasteDetector',
+                    MetricData=[
+                        {
+                            'MetricName': 'WasteAlert',
+                            'Dimensions': [
+                                {'Name': 'ResourceId', 'Value': resource_id},
+                                {'Name': 'Priority', 'Value': priority}
+                            ],
+                            'Value': wastage_score,
+                            'Unit': 'None'
+                        }
+                    ]
+                )
+                logger.info(f"Custom metric sent to CloudWatch for resource {resource_id}")
+            except Exception as e:
+                logger.error(f"Failed to send custom metric for resource {resource_id}: {e}")
+
+    # Sort recommendations by priority and wastage score
+    recommendations.sort(key=lambda x: (
+        {'High': 3, 'Medium': 2, 'Low': 1}[x['priority']], 
+        x['wastage_score']
+    ), reverse=True)
     
     logger.info(f"Generated {len(recommendations)} waste recommendations")
     return recommendations
 
 def store_recommendations(recommendations):
-    """Store recommendations with enhanced metadata"""
+    """
+    Store recommendations with enhanced metadata
+    """
     try:
         with recommendations_table.batch_writer() as batch:
             for rec in recommendations:
@@ -382,7 +450,9 @@ def store_recommendations(recommendations):
         logger.error(f"Error storing recommendations: {str(e)}")
 
 def test_with_sample_data():
-    """Enhanced test function with comprehensive sample data"""
+    """
+    Enhanced test function with more comprehensive sample data
+    """
     sample_data = [
         {
             'resource_id': 'i-0123456789abcdef0',
@@ -399,12 +469,50 @@ def test_with_sample_data():
             'timestamp': datetime.now().isoformat(),
             'processed_date': datetime.now().strftime('%Y-%m-%d'),
             'file_source': 'test-data'
+        },
+        {
+            'resource_id': 'i-0999888777666555c',
+            'service_type': 'Amazon Elastic Compute Cloud',
+            'usage_type': 'BoxUsage:m5.large',
+            'usage_amount': 2.0,  # Low usage for large instance
+            'unblended_cost': 15.50,
+            'usage_start_date': '2025-06-22T00:00:00Z',
+            'usage_end_date': '2025-06-22T24:00:00Z',
+            'availability_zone': 'ap-south-1b',
+            'instance_type': 'm5.large',
+            'operation': 'RunInstances',
+            'region': 'ap-south-1',
+            'timestamp': datetime.now().isoformat(),
+            'processed_date': datetime.now().strftime('%Y-%m-%d'),
+            'file_source': 'test-data'
+        },
+        {
+            'resource_id': 'vol-0987654321fedcba0',
+            'service_type': 'Amazon Elastic Block Store',
+            'usage_type': 'EBS:VolumeUsage.gp3',
+            'usage_amount': 100.0,
+            'unblended_cost': 3.20,
+            'usage_start_date': '2025-06-22T00:00:00Z',
+            'usage_end_date': '2025-06-22T24:00:00Z',
+            'availability_zone': 'ap-south-1a',
+            'instance_type': '',
+            'operation': 'CreateVolume',
+            'region': 'ap-south-1',
+            'timestamp': datetime.now().isoformat(),
+            'processed_date': datetime.now().strftime('%Y-%m-%d'),
+            'file_source': 'test-data'
         }
     ]
     
     logger.info("Testing with enhanced sample data...")
+    
+    # Store usage data
     store_usage_data(sample_data)
+    
+    # Generate recommendations
     recommendations = analyze_waste_patterns(sample_data)
+    
+    # Store recommendations
     store_recommendations(recommendations)
     
     return len(sample_data), len(recommendations)
