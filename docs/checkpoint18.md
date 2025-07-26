@@ -1,83 +1,99 @@
-📍 Objective
-Integrate a system that generates Terraform delete blocks for terminated cloud resources and exposes it through an API endpoint accessible from the frontend.
+# ✅ Checkpoint 17 – Terraform Generator Lambda (Postman-Based API)
 
-🔧 Work Completed
-Lambda Function for Terraform Generation
+## 🎯 Objective
+Create a Lambda function that:
+- Fetches **terminated** AWS resources from DynamoDB
+- Generates corresponding **Terraform delete blocks**
+- Uploads `.tf` files to S3
+- Exposes both functionalities via API Gateway
+- Can be fully tested using **Postman (no frontend required)**
 
-A POST-based Lambda function was developed to:
+---
 
-Query DynamoDB for status = "Terminated" resources.
+## ✅ Completed Implementation
 
-Auto-generate Terraform delete blocks (aws_instance, aws_ebs_volume, etc.).
+### 1. Lambda: `cwd-terraform-generator`
+- Scans DynamoDB table `cwd-waste-recommendations` for `status = "Terminated"`
+- Generates `.tf` delete blocks for:
+  - `aws_instance` (EC2)
+  - `aws_ebs_volume` (EBS)
+  - `aws_s3_bucket` (S3)
+  - `aws_db_instance` (RDS)
+  - `aws_lambda_function` (Lambda)
+- Uploads generated `.tf` files to:
+s3://cwd-cost-usage-reports-as-2025/terraform-scripts/
 
-Upload the generated .tf file to S3 with a timestamped name.
+markdown
+Copy
+Edit
 
-Return success message with S3 file path.
+### 2. API Gateway Setup
+- **Resource path**: `/terraform`
+- **Methods**:
+- `GET /terraform`: Lists all `status=Terminated` resources
+- `POST /terraform`: Accepts `resourceId` and generates a `.tf` file
+- **CORS** enabled for all methods
+- Tested using **Postman**
 
-API Gateway Setup
+---
 
-Created resource path: /terraform
+## 🔁 API Testing via Postman
 
-Methods configured:
+### 🔹 GET /terraform
+- **URL**:  
+https://<api-id>.execute-api.ap-south-1.amazonaws.com/prod/terraform
 
-POST /terraform → triggers Terraform generation Lambda
+markdown
+Copy
+Edit
+- **Returns**: All terminated resource recommendations
 
-GET /terraform → fetches current terminated resource recommendations
-
-Enabled CORS for frontend access.
-
-Integrated test tools inside API Gateway to confirm request/response success.
-
-Lambda Function for GET Method
-
-Returns structured recommendations as:
+### 🔹 POST /terraform
+- **Request Body**:
+```json
+{
+"resourceId": "i-0dummy123456789abc"
+}
+Returns:
 
 json
 Copy
 Edit
 {
-  "recommendations": [
-    {
-      "resourceName": "i_123456",
-      "resourceType": "ec2",
-      "reason": "Idle for 14 days"
-    }
+  "terraform": "Terraform block...",
+  "resource_id": "i-0dummy123456789abc",
+  "resource_type": "ec2",
+  "s3_location": "https://cwd-cost-usage-reports-as-2025.s3.amazonaws.com/terraform-scripts/ec2_i-0dummy123456789abc.tf",
+  "generated_at": "2025-07-26T..."
+}
+📁 Resources Used
+Resource Type	Name / Path
+Lambda	cwd-terraform-generator
+API Gateway	POST /terraform, GET /terraform
+S3 Bucket	cwd-cost-usage-reports-as-2025
+DynamoDB	cwd-waste-recommendations
+
+🔐 IAM Permissions (Lambda Role)
+json
+Copy
+Edit
+{
+  "Action": [
+    "dynamodb:Scan",
+    "s3:PutObject"
+  ],
+  "Resource": [
+    "arn:aws:dynamodb:ap-south-1:<ACCOUNT_ID>:table/cwd-waste-recommendations",
+    "arn:aws:s3:::cwd-cost-usage-reports-as-2025/terraform-scripts/*"
   ]
 }
-Enables frontend to fetch and display recommendations.
+✅ Outcome
+Fully functional Terraform block generator
 
-Frontend Integration (React)
+Zero UI dependency – tested via Postman
 
-Updated RecommendationCard.js to:
+Terraform blocks stored and downloadable from S3
 
-Render resource cards.
+Easy to extend with new resource types or batch generation
 
-On “Generate Locally”, create dummy Terraform block.
-
-On “Generate via API”, trigger POST /terraform and copy backend-generated Terraform block to clipboard.
-
-Used fetchRecommendations.js to call GET /terraform and render dynamic cards.
-
-DynamoDB Table Queried
-
-Table: cwd-waste-recommendations
-
-Fields used:
-
-resource_id, service_type, status, region, reason
-
-S3 Upload Path
-
-Bucket: cwd-cost-usage-reports-as-2025
-
-Key Prefix: terraform-scripts/terraform-delete-<timestamp>.tf
-
-🧪 Testing
-Both GET and POST methods tested through:
-
-API Gateway console
-
-React frontend interface
-
-Clipboard copying functionality verified
-
+Checkpoint 17: COMPLETE ✅
