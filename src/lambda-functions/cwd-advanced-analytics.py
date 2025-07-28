@@ -1,7 +1,3 @@
-# File: src/lambda-functions/cwd-advanced-analytics.py
-# Advanced analytics function for cost trend analysis and ML preparation
-# Created: 2025-06-26 - Checkpoint 4
-
 import json
 import boto3
 from datetime import datetime, timedelta
@@ -18,6 +14,10 @@ logger.setLevel(logging.INFO)
 # Initialize AWS clients for ap-south-1
 dynamodb = boto3.resource('dynamodb', region_name='ap-south-1')
 s3_client = boto3.client('s3', region_name='ap-south-1')
+sns_client = boto3.client('sns', region_name='ap-south-1')
+
+# SNS Topic ARN for weekly summary
+WEEKLY_SUMMARY_TOPIC_ARN = 'arn:aws:sns:ap-south-1:266735843482:cloud-waste-weekly-summary'
 
 # DynamoDB tables
 usage_table = dynamodb.Table('cwd-processed-usage-data')
@@ -88,14 +88,17 @@ def lambda_handler(event, context):
         }
 
 def analyze_cost_trends():
-    """Analyze cost trends over time for predictive modeling"""
+    """
+    Analyze cost trends over time for predictive modeling
+    """
     try:
         logger.info("Analyzing cost trends...")
         
-        # Get last 7 days of usage data
+        # Get last 7 days of usage data (keeping it small for free tier)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=7)
         
+        # Scan usage table for recent data
         response = usage_table.scan(
             FilterExpression=Attr('timestamp').between(
                 start_date.isoformat(),
@@ -110,14 +113,17 @@ def analyze_cost_trends():
         service_trends = {}
         
         for record in usage_data:
+            # Extract date from timestamp
             record_date = record['timestamp'][:10]  # YYYY-MM-DD
             cost = float(record['unblended_cost'])
             service = record['service_type']
             
+            # Track daily totals
             if record_date not in daily_costs:
                 daily_costs[record_date] = 0
             daily_costs[record_date] += cost
             
+            # Track service trends
             if service not in service_trends:
                 service_trends[service] = {}
             if record_date not in service_trends[service]:
@@ -152,8 +158,8 @@ def calculate_trend_direction(daily_costs):
         return "insufficient_data"
     
     sorted_dates = sorted(daily_costs.keys())
-    recent_costs = [daily_costs[date] for date in sorted_dates[-3:]]
-    earlier_costs = [daily_costs[date] for date in sorted_dates[:3]]
+    recent_costs = [daily_costs[date] for date in sorted_dates[-3:]]  # Last 3 days
+    earlier_costs = [daily_costs[date] for date in sorted_dates[:3]]  # First 3 days
     
     if not recent_costs or not earlier_costs:
         return "insufficient_data"
@@ -161,21 +167,25 @@ def calculate_trend_direction(daily_costs):
     recent_avg = statistics.mean(recent_costs)
     earlier_avg = statistics.mean(earlier_costs)
     
-    if recent_avg > earlier_avg * 1.1:
+    if recent_avg > earlier_avg * 1.1:  # 10% increase
         return "increasing"
-    elif recent_avg < earlier_avg * 0.9:
+    elif recent_avg < earlier_avg * 0.9:  # 10% decrease
         return "decreasing"
     else:
         return "stable"
 
 def analyze_service_utilization():
-    """Analyze utilization patterns by service type"""
+    """
+    Analyze utilization patterns by service type
+    """
     try:
         logger.info("Analyzing service utilization...")
         
+        # Get recent usage data
         response = usage_table.scan()
         usage_data = response['Items']
         
+        # Group by service type
         service_stats = {}
         
         for record in usage_data:
@@ -222,20 +232,21 @@ def analyze_service_utilization():
             service_analysis['services'][service] = service_info
             
             # Identify top cost services
-            if stats['total_cost'] > 1.0:
+            if stats['total_cost'] > 1.0:  # Services costing more than $1
                 service_analysis['top_cost_services'].append({
                     'service': service,
                     'cost': stats['total_cost']
                 })
             
             # Identify underutilized services
-            if avg_usage < 10 and stats['total_cost'] > 0.5:
+            if avg_usage < 10 and stats['total_cost'] > 0.5:  # Low usage but significant cost
                 service_analysis['underutilized_services'].append({
                     'service': service,
                     'avg_usage': avg_usage,
                     'cost': stats['total_cost']
                 })
         
+        # Sort top cost services
         service_analysis['top_cost_services'].sort(key=lambda x: x['cost'], reverse=True)
         
         logger.info(f"Service utilization analysis completed for {len(service_stats)} services")
@@ -246,13 +257,17 @@ def analyze_service_utilization():
         return {}
 
 def analyze_recommendation_effectiveness():
-    """Analyze how effective our recommendations have been"""
+    """
+    Analyze how effective our recommendations have been
+    """
     try:
         logger.info("Analyzing recommendation effectiveness...")
         
+        # Get all recommendations
         response = recommendations_table.scan()
         recommendations = response['Items']
         
+        # Group by priority and status
         recommendation_stats = {
             'total_recommendations': len(recommendations),
             'by_priority': {'High': 0, 'Medium': 0, 'Low': 0},
@@ -287,7 +302,7 @@ def analyze_recommendation_effectiveness():
                 confidence_scores.append(confidence)
             
             # Track top recommendations
-            if savings > 1.0:
+            if savings > 1.0:  # Significant savings
                 recommendation_stats['top_recommendations'].append({
                     'recommendation_id': rec['recommendation_id'],
                     'resource_id': rec['resource_id'],
@@ -297,14 +312,16 @@ def analyze_recommendation_effectiveness():
                     'confidence_score': confidence
                 })
         
+        # Calculate average confidence
         if confidence_scores:
             recommendation_stats['average_confidence'] = statistics.mean(confidence_scores)
         
+        # Sort top recommendations by savings
         recommendation_stats['top_recommendations'].sort(
             key=lambda x: x['estimated_savings'], reverse=True
         )
         
-        logger.info(f"Recommendation effectiveness analysis completed")
+        logger.info(f"Recommendation effectiveness analysis completed for {len(recommendations)} recommendations")
         return recommendation_stats
         
     except Exception as e:
@@ -312,14 +329,20 @@ def analyze_recommendation_effectiveness():
         return {}
 
 def detect_cost_anomalies():
-    """Detect unusual cost patterns"""
+    """
+    Detect unusual cost patterns that might indicate issues
+    """
     try:
         logger.info("Detecting cost anomalies...")
         
+        # Get recent usage data
         response = usage_table.scan()
         usage_data = response['Items']
         
+        # Analyze for anomalies
         anomalies = []
+        
+        # Group by resource for anomaly detection
         resource_costs = {}
         
         for record in usage_data:
@@ -336,7 +359,7 @@ def detect_cost_anomalies():
                 avg_cost = statistics.mean(costs)
                 max_cost = max(costs)
                 
-                # Cost spike detection
+                # Anomaly: cost spike (>3x average)
                 if max_cost > avg_cost * 3 and avg_cost > 0.1:
                     anomalies.append({
                         'type': 'cost_spike',
@@ -344,6 +367,16 @@ def detect_cost_anomalies():
                         'average_cost': avg_cost,
                         'spike_cost': max_cost,
                         'severity': 'High' if max_cost > avg_cost * 5 else 'Medium',
+                        'detected_at': datetime.now().isoformat()
+                    })
+                
+                # Anomaly: sudden cost appearance (new expensive resource)
+                if avg_cost > 2.0 and len(costs) == 1:
+                    anomalies.append({
+                        'type': 'new_expensive_resource',
+                        'resource_id': resource_id,
+                        'cost': avg_cost,
+                        'severity': 'High' if avg_cost > 5.0 else 'Medium',
                         'detected_at': datetime.now().isoformat()
                     })
         
@@ -362,11 +395,12 @@ def detect_cost_anomalies():
         return {}
 
 def generate_weekly_summary():
-    """Generate a comprehensive weekly summary"""
+    """
+    Generate a comprehensive weekly summary and publish via SNS
+    """
     try:
         logger.info("Generating weekly summary...")
         
-        # Get data from last 7 days
         end_date = datetime.now()
         start_date = end_date - timedelta(days=7)
         
@@ -376,22 +410,19 @@ def generate_weekly_summary():
                 end_date.isoformat()
             )
         )
-        
         usage_data = response['Items']
         
-        # Calculate weekly metrics
         total_cost = sum(float(record['unblended_cost']) for record in usage_data)
         total_usage = sum(float(record['usage_amount']) for record in usage_data)
         unique_resources = len(set(record['resource_id'] for record in usage_data))
         unique_services = len(set(record['service_type'] for record in usage_data))
         
-        # Get active recommendations
         rec_response = recommendations_table.scan(
             FilterExpression=Attr('status').eq('Active')
         )
         active_recommendations = rec_response['Items']
         
-        weekly_summary = {
+        summary = {
             'period': {
                 'start_date': start_date.strftime('%Y-%m-%d'),
                 'end_date': end_date.strftime('%Y-%m-%d'),
@@ -414,25 +445,46 @@ def generate_weekly_summary():
             },
             'generated_at': datetime.now().isoformat()
         }
+
+        # 📤 Publish summary to SNS
+        message = (
+            f"📊 Cloud Weekly Summary Report\n"
+            f"Period: {summary['period']['start_date']} → {summary['period']['end_date']}\n"
+            f"Total Cost: ${total_cost:.2f} | Daily Avg: ${summary['cost_metrics']['average_daily_cost']:.2f}\n"
+            f"Resources: {unique_resources} | Services: {unique_services}\n"
+            f"Active Recommendations: {summary['recommendations']['active_count']} "
+            f"(High Priority: {summary['recommendations']['high_priority_count']})\n"
+            f"Estimated Savings: ${summary['recommendations']['total_potential_savings']:.2f}"
+        )
+        sns_client.publish(
+            TopicArn=WEEKLY_SUMMARY_TOPIC_ARN,
+            Subject='[CloudWasteDetector] Weekly Summary Report',
+            Message=message
+        )
         
-        logger.info("Weekly summary generated successfully")
-        return weekly_summary
+        logger.info("Weekly summary generated and SNS notification sent")
+        return summary
         
     except Exception as e:
         logger.error(f"Error generating weekly summary: {str(e)}")
         return {}
 
 def prepare_ml_features():
-    """Prepare features for machine learning models"""
+    """
+    Prepare features for machine learning models
+    """
     try:
         logger.info("Preparing ML features...")
         
+        # Get usage data
         response = usage_table.scan()
         usage_data = response['Items']
         
+        # Prepare features for each resource
         ml_features = []
-        resource_data = {}
         
+        # Group by resource
+        resource_data = {}
         for record in usage_data:
             resource_id = record['resource_id']
             if resource_id not in resource_data:
@@ -442,11 +494,13 @@ def prepare_ml_features():
         # Create feature vectors
         for resource_id, records in resource_data.items():
             if len(records) > 0:
+                # Calculate aggregated features
                 total_cost = sum(float(r['unblended_cost']) for r in records)
                 total_usage = sum(float(r['usage_amount']) for r in records)
                 avg_cost = total_cost / len(records)
                 avg_usage = total_usage / len(records)
                 
+                # Get the most recent record for categorical features
                 latest_record = max(records, key=lambda x: x['timestamp'])
                 
                 features = {
@@ -455,14 +509,20 @@ def prepare_ml_features():
                     'instance_type': latest_record['instance_type'],
                     'availability_zone': latest_record['availability_zone'],
                     'region': latest_record['region'],
+                    
+                    # Numerical features
                     'total_cost': total_cost,
                     'average_cost': avg_cost,
                     'total_usage': total_usage,
                     'average_usage': avg_usage,
                     'usage_frequency': len(records),
                     'cost_per_usage_unit': total_cost / total_usage if total_usage > 0 else 0,
+                    
+                    # Time-based features
                     'days_active': len(set(r['timestamp'][:10] for r in records)),
                     'last_seen': latest_record['timestamp'],
+                    
+                    # Derived features for ML
                     'is_high_cost': 1 if total_cost > 1.0 else 0,
                     'is_low_utilization': 1 if avg_usage < 10 else 0,
                     'cost_category': 'high' if total_cost > 2.0 else 'medium' if total_cost > 0.5 else 'low'
@@ -485,8 +545,11 @@ def prepare_ml_features():
         return {}
 
 def store_analytics_results_s3(analytics_results):
-    """Store analytics results in S3 for future use"""
+    """
+    Store analytics results in S3 for future use
+    """
     try:
+        # Create analytics file
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name = f"analytics-report-{timestamp}.json"
         
@@ -514,3 +577,11 @@ def store_analytics_results_s3(analytics_results):
         
     except Exception as e:
         logger.error(f"Error storing analytics results: {str(e)}")
+
+# Test function
+def create_test_event():
+    """Create a test event for the analytics function"""
+    return {
+        "analytics_type": "weekly_summary",
+        "force_refresh": True
+    }
